@@ -34,6 +34,9 @@ typedef struct {
 } BLE_CIRCULAR_BUF;
 
 BLE_CIRCULAR_BUF ble_cbuf;
+uint16 result3;
+uint16 result2;
+uint8 _conn_handle;
 
 static uint8 _max_packet_size = 20; // Maximum bytes per one packet
 static uint8 _min_packet_size = 20; // Target minimum bytes for one packet
@@ -41,13 +44,13 @@ static void update_circ_wrtindex(BLE_CIRCULAR_BUF *index_struct, uint32_t update
 static void update_circ_readindex(BLE_CIRCULAR_BUF *index_struct, uint32_t update_by);
 
 bool ble_circ_pop(){
-uint8 temp[ble_cbuf.data_length];
+int8 temp[_max_packet_size];
 	for(int i = 0; i < ble_cbuf.data_length; i++){
 		temp[i] = ble_cbuf.cbuf[ble_cbuf.read_ptr]; //move the packet to a print variable for transmission
 		update_circ_readindex(&ble_cbuf, 1); //update
 		ble_cbuf.size += 1; //add a byte back to the size
 	}
-gecko_cmd_gatt_server_send_characteristic_notification(1, GATTDB_GATT_SPP_DATA, ble_cbuf.data_length, temp);
+result3 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, GATTDB_GATT_SPP_DATA, ble_cbuf.data_length, temp)->result;
 //connection handle of 1 because that is what the connection is defined as in advertiser
 //GATTDB_GATT_SPP_DATA = 26 because that is what the SPP example code had it macro'd as
 ble_cbuf.data_length = 0;
@@ -83,7 +86,6 @@ static void bootMessage(struct gecko_msg_system_boot_evt_t *bootevt);
 
 /* Flag for indicating DFU Reset must be performed */
 static uint8_t boot_to_dfu = 0;
-
 //
 const uint8 periodicSyncService[16] = {0x81,0xc2,0x00,0x2d,0x31,0xf4,0xb0,0xbf,0x2b,0x42,0x49,0x68,0xc7,0x25,0x71,0x41};
 
@@ -112,7 +114,6 @@ static uint8_t findServiceInAdvertisement(uint8_t *data, uint8_t len)
   return 0;
 }
 
-
 /* Main application */
 void appMain(gecko_configuration_t *pconfig)
 {
@@ -138,7 +139,7 @@ void appMain(gecko_configuration_t *pconfig)
 
   while (1) {
 
-	  if (ble_cbuf.data_length == _max_packet_size ){
+	  if (ble_cbuf.data_length >= _max_packet_size ){
 	  		  ble_circ_pop();
 	  	  }
     /* Event pointer for handling events */
@@ -176,8 +177,24 @@ void appMain(gecko_configuration_t *pconfig)
 		  gecko_cmd_le_gap_set_discovery_type(le_gap_phy_1m,0);
 		  gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 
+		  result2 = gecko_cmd_le_gap_start_advertising(1, le_gap_general_discoverable, le_gap_undirected_connectable)->result;
+		  printLog("Connection Advertising Response =%d \r\n",result2);
 		break;
+	  case gecko_evt_le_connection_opened_id:
 
+	       _conn_handle = evt->data.evt_le_connection_opened.connection;
+	       printLog("Connected\r\n");
+	      /* Request connection parameter update.
+	      * conn.interval min 20ms, max 40ms, slave latency 4 intervals,
+	     * supervision timeout 2 seconds
+	     * (These should be compliant with Apple Bluetooth Accessory Design Guidelines, both R7 and R8) */
+	     gecko_cmd_le_connection_set_timing_parameters(_conn_handle, 24, 40, 0, 200, 0, 0xFFFF);
+
+	        //setting timer for periodic writes
+	        //gecko_cmd_hardware_set_soft_timer((16384/2),2,0); //5 seconds = 163480, id = 2, 0 =repeating
+	       //16384 = 0.5s
+	       //gecko_cmd_le_gap_start_advertising();
+	    break;
 	  case gecko_evt_le_connection_closed_id:
 		  printf("Connection Closed\r\n");
 		/* Check if need to boot to dfu mode */
