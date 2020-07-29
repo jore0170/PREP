@@ -93,8 +93,8 @@ void appMain(gecko_configuration_t *pconfig)
         reset_variables();
     	gecko_cmd_gatt_set_max_mtu(247);
 
-    	result2 = gecko_cmd_le_gap_start_advertising(1, le_gap_general_discoverable, le_gap_undirected_connectable)->result;
-    	printLog("Connection Advertising Response =%d \r\n",result2);
+    	//result2 = gecko_cmd_le_gap_start_advertising(1, le_gap_general_discoverable, le_gap_undirected_connectable)->result;
+    	//printLog("Connection Advertising Response =%d \r\n",result2);
         bootMessage(&(evt->data.evt_system_boot));
 
 
