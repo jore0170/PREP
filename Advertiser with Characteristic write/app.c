@@ -98,8 +98,8 @@ void appMain(gecko_configuration_t *pconfig)
         bootMessage(&(evt->data.evt_system_boot));
 
 
-      	gecko_cmd_system_set_tx_power(100);
-      	gecko_cmd_le_gap_set_advertise_tx_power(0,30);
+      	gecko_cmd_system_set_tx_power(0);
+      	gecko_cmd_le_gap_set_advertise_tx_power(0,0);// was (0,30)
           /* Set advertising parameters. 100ms advertisement interval.
            * The first parameter is advertising set handle
            * The next two parameters are minimum and maximum advertising interval, both in
