@@ -189,9 +189,22 @@ void appMain(gecko_configuration_t *pconfig)
 	     * supervision timeout 2 seconds
 	     * (These should be compliant with Apple Bluetooth Accessory Design Guidelines, both R7 and R8) */
 	     gecko_cmd_le_connection_set_timing_parameters(_conn_handle, 24, 40, 0, 200, 0, 0xFFFF);
+
+	     //configure & enable cte after periodic sync established
+	     uint8 handle = sync_handle;
+	     uint8 slot_dur = 1;//switching and sampling are 1us each, other option is 2
+	     uint8 cte_count = 0; //reporting all, other values are max cte's sampled in each periodic advertising interval
+	     uint8 s_len = 1;
+	     uint8 sa[1] = { 0 };
+
+	     uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(handle, slot_dur,cte_count,s_len,sa)->result;
+
+	     printf("Response: 0x%x\r\n",res);
 	    break;
 	  case gecko_evt_le_connection_closed_id:
-		  printf("Connection Closed\r\n");
+		  gecko_cmd_cte_receiver_disable_connection_cte(sync_handle);
+		  printf("Connection Closed\r\n");\
+
 		/* Check if need to boot to dfu mode */
 		if (boot_to_dfu) {
 		  /* Enter to DFU OTA mode */
@@ -241,15 +254,15 @@ void appMain(gecko_configuration_t *pconfig)
 		  gecko_cmd_le_gap_end_procedure();
 
 		  //configure & enable cte after periodic sync established
-		  uint8 handle = sync_handle;
-		  uint8 slot_dur = 1;//switching and sampling are 1us each, other option is 2
-		  uint8 cte_count = 0; //reporting all, other values are max cte's sampled in each periodic advertising interval
-		  uint8 s_len = 1;
-		  uint8 sa[1] = { 0 };
+		  //uint8 handle = sync_handle;
+		  //uint8 slot_dur = 1;//switching and sampling are 1us each, other option is 2
+		  //uint8 cte_count = 0; //reporting all, other values are max cte's sampled in each periodic advertising interval
+		  //uint8 s_len = 1;
+		  //uint8 sa[1] = { 0 };
 
-		  uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(handle, slot_dur,cte_count,s_len,sa)->result;
+		  //uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(handle, slot_dur,cte_count,s_len,sa)->result;
 
-		  printf("Response: 0x%x\r\n",res);
+		  //printf("Response: 0x%x\r\n",res);
 		  break;
 
 	  case gecko_evt_sync_closed_id:
