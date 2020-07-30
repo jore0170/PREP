@@ -25,7 +25,7 @@
 #include "app.h"
 
 typedef struct {
-	int  cbuf[BUFFER_LENGTH];
+	int8  cbuf[BUFFER_LENGTH];
 	int  data_length;
 	uint32_t size;
 	uint32_t read_ptr;
@@ -44,7 +44,7 @@ static void update_circ_wrtindex(BLE_CIRCULAR_BUF *index_struct, uint32_t update
 static void update_circ_readindex(BLE_CIRCULAR_BUF *index_struct, uint32_t update_by);
 
 bool ble_circ_pop(){
-int8 temp[_max_packet_size];
+uint8 temp[_max_packet_size];
 	for(int i = 0; i < ble_cbuf.data_length; i++){
 		temp[i] = ble_cbuf.cbuf[ble_cbuf.read_ptr]; //move the packet to a print variable for transmission
 		update_circ_readindex(&ble_cbuf, 1); //update
@@ -189,11 +189,6 @@ void appMain(gecko_configuration_t *pconfig)
 	     * supervision timeout 2 seconds
 	     * (These should be compliant with Apple Bluetooth Accessory Design Guidelines, both R7 and R8) */
 	     gecko_cmd_le_connection_set_timing_parameters(_conn_handle, 24, 40, 0, 200, 0, 0xFFFF);
-
-	        //setting timer for periodic writes
-	        //gecko_cmd_hardware_set_soft_timer((16384/2),2,0); //5 seconds = 163480, id = 2, 0 =repeating
-	       //16384 = 0.5s
-	       //gecko_cmd_le_gap_start_advertising();
 	    break;
 	  case gecko_evt_le_connection_closed_id:
 		  printf("Connection Closed\r\n");
@@ -219,11 +214,11 @@ void appMain(gecko_configuration_t *pconfig)
 
 		  /* only look at extended advertisements */
 		  if(evt->data.evt_le_gap_extended_scan_response.packet_type & 0x80){
-			  printLog("got ext adv indication with tx_power = %d\r\n",
-					  evt->data.evt_le_gap_extended_scan_response.tx_power );
+			 // printLog("got ext adv indication with tx_power = %d\r\n",
+					  //evt->data.evt_le_gap_extended_scan_response.tx_power );
 			  if (findServiceInAdvertisement(&(evt->data.evt_le_gap_extended_scan_response.data.data[0]), evt->data.evt_le_gap_extended_scan_response.data.len) != 0) {
 
-				  printLog("found periodic sync service, attempting to open sync\r\n");
+				  //printLog("found periodic sync service, attempting to open sync\r\n");
 
 				  uint16 skip = 1, timeout = 20; /* similar to connection params? */
 				  sync_handle = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
@@ -231,7 +226,7 @@ void appMain(gecko_configuration_t *pconfig)
 						 timeout,
 						 evt->data.evt_le_gap_extended_scan_response.address,
 						 evt->data.evt_le_gap_extended_scan_response.address_type)->sync;
-				  printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
+				  //printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
 
 
 			  }
@@ -241,20 +236,19 @@ void appMain(gecko_configuration_t *pconfig)
 
 	  case gecko_evt_sync_opened_id:
 		  /* now that sync is open, we can stop scanning*/
-		  printLog("evt_sync_opened\r\n");
+		  //printLog("evt_sync_opened\r\n");
 		  gecko_cmd_hardware_set_soft_timer(0,1,0);
 		  gecko_cmd_le_gap_end_procedure();
 
 		  //configure & enable cte after periodic sync established
 		  uint8 handle = sync_handle;
-		  uint8 slot_dur = 1;
-		  uint8 cte_count = 0;
+		  uint8 slot_dur = 1;//switching and sampling are 1us each, other option is 2
+		  uint8 cte_count = 0; //reporting all, other values are max cte's sampled in each periodic advertising interval
 		  uint8 s_len = 1;
 		  uint8 sa[1] = { 0 };
 
-		  //uint16 config_res = gecko_cmd_cte_receiver_configure(1)->result;
 		  uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(handle, slot_dur,cte_count,s_len,sa)->result;
-		  //printf("Config Response: 0x%x\r\n",config_res);
+
 		  printf("Response: 0x%x\r\n",res);
 		  break;
 
@@ -266,21 +260,6 @@ void appMain(gecko_configuration_t *pconfig)
 		  gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 		  break;
 
-	  case gecko_evt_sync_data_id:
-		  /*
-		  printLog("periodic sync handle %d\r\n", evt->data.evt_sync_data.sync);
-		  printLog("got following sync data: \r\n ");
-		  for(int i = 0; i < evt->data.evt_sync_data.data.len ; i++){
-			  printLog(" %X", evt->data.evt_sync_data.data.data[i]);
-
-		  }
-		  printLog("\r\n");
-		  printLog("periodic sync RSSI %d and Tx power %d\r\n",
-				  evt->data.evt_sync_data.rssi,
-				  evt->data.evt_sync_data.tx_power);
-		  printLog("periodic data status %d\r\n", evt->data.evt_sync_data.data_status);
-		  break; */
-
 	  case gecko_evt_hardware_soft_timer_id:
 	  {
 		  if(1==evt->data.evt_hardware_soft_timer.handle){
@@ -288,11 +267,7 @@ void appMain(gecko_configuration_t *pconfig)
 		  }
 	  }
 	  break;
-	  /* Events related to OTA upgrading
-		 ----------------------------------------------------------------------------- */
 
-	  /* Check if the user-type OTA Control Characteristic was written.
-	   * If ota_control was written, boot the device into Device Firmware Upgrade (DFU) mode. */
 	  case gecko_evt_gatt_server_user_write_request_id:
 
 		if (evt->data.evt_gatt_server_user_write_request.characteristic == gattdb_ota_control) {
@@ -309,18 +284,19 @@ void appMain(gecko_configuration_t *pconfig)
 		}
 		break;
 	  case gecko_evt_cte_receiver_connectionless_iq_report_id: {
-		    printf("GOT CONNECTIONLESS IQ report\r\n");
+		    //printf("GOT CONNECTIONLESS IQ report\r\n");
 		    struct gecko_msg_cte_receiver_connectionless_iq_report_evt_t report = evt->data.evt_cte_receiver_connectionless_iq_report;
-			printf("GOT SILABS IQ report\r\n");
-			printf("status: %d, ch: %d, rssi: %d, ant:%d, cte:%d, duration:%d, len:%d\r\n", report.status,
-					report.channel, report.rssi, report.rssi_antenna_id, report.cte_type, report.slot_durations,
-					report.samples.len);
+			//printf("GOT SILABS IQ report\r\n");
+			//printf("status: %d, ch: %d, rssi: %d, ant:%d, cte:%d, duration:%d, len:%d\r\n", report.status,
+					//report.channel, report.rssi, report.rssi_antenna_id, report.cte_type, report.slot_durations,
+					//report.samples.len);
 			for (int i=0; i<report.samples.len; i++) {
 				RETARGET_WriteChar(report.samples.data[i]);
 			}
 			ble_circ_push(report.channel);
 			ble_circ_push(report.rssi);
-			printf("\r\n");
+			//try flipping MSB for positive signed value, (230)->-102 but gives 102
+			//printf("\r\n");
 		  break;
 	  }
 	  default:
