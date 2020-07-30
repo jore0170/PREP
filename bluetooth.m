@@ -10,9 +10,8 @@ subscribe(c);
 
 c.DataAvailableFcn = @displayCharacteristicData;
 data(244) = 0;
-
 function displayCharacteristicData(src,evt)
-    fileID = fopen('data.txt','w');
+    fileID = fopen('data.txt','a+');
     data = read(src,'oldest');
     for i=1:244
         if (data(i)>127)
