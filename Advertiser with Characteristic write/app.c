@@ -50,8 +50,8 @@ void appMain(gecko_configuration_t *pconfig)
 #endif
 
   /* Set maximum number of periodic advertisers */
-  pconfig->bluetooth.max_advertisers = 3;
-  pconfig->bluetooth.max_connections = 3;
+  pconfig->bluetooth.max_advertisers = 2;
+  pconfig->bluetooth.max_connections = 2;
 
   /* Initialize debug prints. Note: debug prints are off by default. See DEBUG_LEVEL in app.h */
   initLog();
@@ -105,6 +105,7 @@ void appMain(gecko_configuration_t *pconfig)
            * The next two parameters are minimum and maximum advertising interval, both in
            * units of (milliseconds * 1.6).
            * The last two parameters are duration and maxevents left as default. */
+      	   //0x20 = decimal 32 would be 20ms (min), 65535 decimal would be 40.96 seconds, 160 decimal is 100ms
           gecko_cmd_le_gap_set_advertise_timing(0, 160, 160, 0, 0);
 
           /* turn off legacy PDU flag*/
@@ -116,13 +117,14 @@ void appMain(gecko_configuration_t *pconfig)
 
           // Start periodic advertising
           /* adv set #1 , 100 ms min/max interval, include tx power in PDU*/
-          result = gecko_cmd_le_gap_start_periodic_advertising(0,160,160,1)->result;
+          //min and max were 160
+          result = gecko_cmd_le_gap_start_periodic_advertising(0,0x06,0x06,1)->result;
           printf("start_periodic_advertising returns 0x%X\r\n",result);
 
           //configure & enable cte after periodic advertising enabled
 
 		   uint8 handle = 0;
-		   uint8 cte_length = 5;
+		   uint8 cte_length = 0x02;//was decimal 5, hex 2 is minimum (16us)
 		   uint8 cte_type = 0;
 		   uint8 cte_count = 1;
 		   uint8 s_len = 1;
