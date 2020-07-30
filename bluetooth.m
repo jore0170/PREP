@@ -14,6 +14,6 @@ c.DataAvailableFcn = @displayCharacteristicData;
 function displayCharacteristicData(src,evt)
     fileID = fopen('data.txt','w');
     data = read(src,'oldest');
-    fprintf(fileID,'%d ',data);
+    fprintf(fileID,'%d ',typecast(data,'int8'));
     disp(data);
 end
