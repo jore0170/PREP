@@ -39,6 +39,8 @@ uint16 result3;
 uint16 result2;
 uint8 _conn_handle;
 bool Connection;
+uint8 channel;
+int8 rssi;
 
 
 static uint8 _max_packet_size = 20; // Maximum bytes per one packet
@@ -141,10 +143,10 @@ void appMain(gecko_configuration_t *pconfig)
     gecko_init_periodic_advertising();
 
    //Initialize CTE Transmitter
-   gecko_bgapi_class_cte_transmitter_init();
+   //gecko_bgapi_class_cte_transmitter_init();
 	
    //Initialize CTE Receiver
-   gecko_bgapi_class_cte_receiver_init();
+   //gecko_bgapi_class_cte_receiver_init();
 
 
   uint8 sync_handle;
@@ -209,8 +211,8 @@ void appMain(gecko_configuration_t *pconfig)
           uint8 s_len = 1;
           uint8 sa[1] = {0};
 
-          uint16 response = gecko_cmd_cte_transmitter_enable_connectionless_cte(handle,cte_length,cte_type,cte_count,s_len,sa)->result;
-          printf("CTE Transmitter Response: 0x%x \r\n",response);
+          //uint16 response = gecko_cmd_cte_transmitter_enable_connectionless_cte(handle,cte_length,cte_type,cte_count,s_len,sa)->result;
+          //printf("CTE Transmitter Response: 0x%x \r\n",response);
 
 
           //Set BT5 advertisement data
@@ -245,7 +247,7 @@ void appMain(gecko_configuration_t *pconfig)
 
 	    break;
 	  case gecko_evt_le_connection_closed_id:
-		  gecko_cmd_cte_receiver_disable_connection_cte(sync_handle);
+		  //gecko_cmd_cte_receiver_disable_connection_cte(sync_handle);
 		  printf("Connection Closed\r\n");\
 
 		/* Check if need to boot to dfu mode */
@@ -272,24 +274,27 @@ void appMain(gecko_configuration_t *pconfig)
 		  if(evt->data.evt_le_gap_extended_scan_response.packet_type & 0x80){
 			  printLog("got ext adv indication with tx_power = %d\r\n",
 					  evt->data.evt_le_gap_extended_scan_response.tx_power );
-			  printLog("UUID %p\r\n", &(evt->data.evt_le_gap_extended_scan_response.data.data[0]));
 			  if (findServiceInAdvertisement(&(evt->data.evt_le_gap_extended_scan_response.data.data[0]), evt->data.evt_le_gap_extended_scan_response.data.len) != 0) {
 
 				  printLog("found periodic sync service, attempting to open sync\r\n");
 
 				  uint16 skip = 1, timeout = 20; /* similar to connection params? */
 				  struct gecko_msg_sync_open_rsp_t *response;
-				  response = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
-						 skip,
-						 timeout,
-						 evt->data.evt_le_gap_extended_scan_response.address,
-						 evt->data.evt_le_gap_extended_scan_response.address_type);
-				  sync_handle = response->sync;
-				  uint16 result4 = response->result;
-				  printLog("Sync Result %x\r\n", result4);
-				  printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
-
-
+				  //response = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
+						 //skip,
+						 //timeout,
+						 //evt->data.evt_le_gap_extended_scan_response.address,
+						 //evt->data.evt_le_gap_extended_scan_response.address_type);
+				  //sync_handle = response->sync;
+				  //uint16 result4 = response->result;
+				  //printLog("Sync Result %x\r\n", result4);
+				  //printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
+				  channel = evt->data.evt_le_gap_extended_scan_response.channel;
+				  rssi = evt->data.evt_le_gap_extended_scan_response.rssi;
+				  printLog("Channel %d\r\n", channel);
+				  printLog("rssi %d\r\n", rssi);
+				  ble_circ_push(channel);
+				  ble_circ_push(rssi);
 			  }
 		  }
 	  }
@@ -308,15 +313,16 @@ void appMain(gecko_configuration_t *pconfig)
 		  uint8 Rs_len = 1;
 		  uint8 Rsa[1] = { 0 };
 
-
 		  //uint8 test[1] = {7};
 		  //uint8 testsize = 1;
 		  //uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, GATTDB_GATT_SPP_DATA, testsize, test)->result;
 		  //printLog("Notification Response %x\r\n",result4);
 
-		  uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(Rhandle, Rslot_dur,Rcte_count,Rs_len,Rsa)->result;
+		  //uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(Rhandle, Rslot_dur,Rcte_count,Rs_len,Rsa)->result;
 
-		  printf("CTE Receiver Response: 0x%x\r\n",res);
+		  //printf("CTE Receiver Response: 0x%x\r\n",res);
+
+
 		  break;
 
 	  case gecko_evt_sync_closed_id:
