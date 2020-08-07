@@ -1,6 +1,6 @@
 /***************************************************************************//**
  * @file app.c
- * @brief application code for parallel tx/rx broadcasting to ble characteristic
+ * @brief Silicon Labs Periodic Advertisement Scanner Program
  *******************************************************************************
  * # License
  * <b>Copyright 2018 Silicon Laboratories Inc. www.silabs.com</b>
@@ -14,15 +14,16 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
+//PARALLEL
 #define BUFFER_LENGTH 512
-#define GATTDB_GATT_SPP_DATA 26
 /* Bluetooth stack headers */
 #include "bg_types.h"
 #include "native_gecko.h"
 #include "gatt_db.h"
 #include <stdio.h>
-#include <stdlib.h>
+#include <time.h>
 #include "app.h"
+#include <stdlib.h>
 
 typedef struct {
 	int8  cbuf[BUFFER_LENGTH];
@@ -33,12 +34,12 @@ typedef struct {
 
 } BLE_CIRCULAR_BUF;
 
-bd_addr local_addr;
 BLE_CIRCULAR_BUF ble_cbuf;
 uint16 result3;
 uint16 result2;
 uint8 _conn_handle;
 bool Connection;
+
 
 static uint8 _max_packet_size = 20; // Maximum bytes per one packet
 static uint8 _min_packet_size = 20; // Target minimum bytes for one packet
@@ -52,10 +53,10 @@ uint8 temp[_max_packet_size];
 		update_circ_readindex(&ble_cbuf, 1); //update
 		ble_cbuf.size += 1; //add a byte back to the size
 	}
-//result3 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, GATTDB_GATT_SPP_DATA, _max_packet_size, temp)->result;
-result3 = gecko_cmd_gatt_write_characteristic_value_without_response(_conn_handle, GATTDB_GATT_SPP_DATA, _max_packet_size, temp)->result;
-printLog("Write response %x", result3);
-//resetting non connected device makes both devices gather data
+
+uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, gattdb_Data, _max_packet_size, temp)->result;
+printLog("Notification Response %x",result4);
+
 //connection handle of 1 because that is what the connection is defined as in advertiser
 //GATTDB_GATT_SPP_DATA = 26 because that is what the SPP example code had it macro'd as
 ble_cbuf.data_length = 0;
@@ -64,19 +65,10 @@ return false;
 }
 
 void ble_circ_push(int data){
-	//if (ble_cbuf.data_length == 0){
-		//for (int i=0; i<=5; i++){
-		//ble_cbuf.cbuf[ble_cbuf.write_ptr + i] = local_addr.addr[5-i];
-		//update_circ_wrtindex(&ble_cbuf, 1);
-		//ble_cbuf.size --;
-		//ble_cbuf.data_length ++;
-		//}
-	//}else{
 	ble_cbuf.cbuf[ble_cbuf.write_ptr] = data; //populate the circular buffer with each char of string
 	update_circ_wrtindex(&ble_cbuf, 1); // move the write ptr 1
 	ble_cbuf.size --;
 	ble_cbuf.data_length++;
-	//}
 }
 
 
@@ -136,7 +128,8 @@ void appMain(gecko_configuration_t *pconfig)
 #endif
 
   /* Set the maximum number of periodic sync allowed*/
-  pconfig->bluetooth.max_periodic_sync = 2;
+  pconfig->bluetooth.max_periodic_sync = 1;
+  pconfig->bluetooth.max_connections = 2;
 
   /* Initialize debug prints. Note: debug prints are off by default. See DEBUG_LEVEL in app.h */
   initLog();
@@ -145,13 +138,14 @@ void appMain(gecko_configuration_t *pconfig)
   gecko_init(pconfig);
 
   /* Initialize Periodic advertisement */
-  gecko_init_periodic_advertising();
+    gecko_init_periodic_advertising();
 
-  //Initialize CTE Transmitter
-  gecko_bgapi_class_cte_transmitter_init();
+   //Initialize CTE Transmitter
+   gecko_bgapi_class_cte_transmitter_init();
+	
+   //Initialize CTE Receiver
+   gecko_bgapi_class_cte_receiver_init();
 
-  //Initialize CTE Receiver
-  gecko_bgapi_class_cte_receiver_init();
 
   uint8 sync_handle;
   gecko_bgapi_class_sync_init();
@@ -180,66 +174,61 @@ void appMain(gecko_configuration_t *pconfig)
 	  /* This boot event is generated when the system boots up after reset.
 	   * Do not call any stack commands before receiving the boot event.
 	   * Here the system is set to start advertising immediately after boot procedure. */
+	  /* Array for advertisement data */
+	  static uint8 periodic_adv_data[191];
 
-	/* Array for advertisement data */
-	      static uint8 periodic_adv_data[191];
-	      uint16 result;
-
-	  case gecko_evt_system_boot_id:
+	case gecko_evt_system_boot_id:
 		  reset_variables();
 		  gecko_cmd_gatt_set_max_mtu(247);
 
-
-
 		  bootMessage(&(evt->data.evt_system_boot));
+		  printLog("SYSTEM BOOTED\r\n");
+
 		  gecko_cmd_system_set_tx_power(0);
 		  gecko_cmd_le_gap_set_advertise_tx_power(0,0);// was (0,30)
-
-
           gecko_cmd_le_gap_set_advertise_timing(0, 160, 160, 0, 0);
 
           /* turn off legacy PDU flag*/
           gecko_cmd_le_gap_clear_advertise_configuration(0,1);
-          gecko_cmd_le_gap_clear_advertise_configuration(0x1,0);//check
 
-          /* It is recommended to enable event le_gap_extended_scan_response
+          // Start extended advertising
+          uint16 result = gecko_cmd_le_gap_start_advertising(0,le_gap_general_discoverable, le_gap_non_connectable)->result;                    printf("le_gap_start_advertising() returns 0x%X\r\n", result);
+
+          // Start periodic advertising
+          /* adv set #1 , 100 ms min/max interval, include tx power in PDU*/
+          //min and max were 160
+          result = gecko_cmd_le_gap_start_periodic_advertising(0,0x06,0x06,1)->result;
+          printf("start_periodic_advertising returns 0x%X\r\n",result);
+
+          //configure & enable cte after periodic advertising enabled
+
+          uint8 handle = 0;
+          uint8 cte_length = 0x02;//was decimal 5, hex 2 is minimum (16us)
+          uint8 cte_type = 0;
+          uint8 cte_count = 1;
+          uint8 s_len = 1;
+          uint8 sa[1] = {0};
+
+          uint16 response = gecko_cmd_cte_transmitter_enable_connectionless_cte(handle,cte_length,cte_type,cte_count,s_len,sa)->result;
+          printf("CTE Transmitter Response: 0x%x \r\n",response);
+
+
+          //Set BT5 advertisement data
+          result = gecko_cmd_le_gap_bt5_set_adv_data(0,8,sizeof(periodic_adv_data),periodic_adv_data)->result;
+          printf("set_adv_data for periodic advertising data returns 0x%X\r\n",result);
+          gecko_cmd_hardware_set_soft_timer(32768, 0, 0);
+
+          /////////////////////////////////////////////////////////////////////////////////////////
+
+		  /* It is recommended to enable event le_gap_extended_scan_response
 		  which contains useful information for establishing a synchronization. */
 		  gecko_cmd_le_gap_set_discovery_extended_scan_response(true);
 		  gecko_cmd_le_gap_set_discovery_timing(le_gap_phy_1m,200,200);
 		  gecko_cmd_le_gap_set_discovery_type(le_gap_phy_1m,0);
 		  gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 
-		  // Start extended advertising
-		  result = gecko_cmd_le_gap_start_advertising(0,le_gap_general_discoverable, le_gap_non_connectable)->result;
-		  printf("le_gap_start_advertising() returns 0x%X\r\n", result);
-
-		  // Start periodic advertising
-		  /* adv set #1 , 100 ms min/max interval, include tx power in PDU*/
-		  //min and max were 160
-		  result = gecko_cmd_le_gap_start_periodic_advertising(0,0x06,0x06,1)->result;
-		  printf("start_periodic_advertising returns 0x%X\r\n",result);
-
-		  //advertising for connectable computer
-		  result2 = gecko_cmd_le_gap_start_advertising(0x1, le_gap_general_discoverable, le_gap_connectable_scannable)->result;
-		  printLog("Connection Advertising Response 0x%x \r\n",result2);
-
-		  //configure & enable cte after periodic advertising enabled
-
-		  uint8 thandle = 0;
-		  uint8 cte_length = 0x02;//was decimal 5, hex 2 is minimum (16us)
-		  uint8 cte_type = 0;
-		  uint8 tcte_count = 1;
-		  uint8 s_len = 1;
-		  uint8 sa[1] = {0};
-
-		  uint16 response = gecko_cmd_cte_transmitter_enable_connectionless_cte(thandle,cte_length,cte_type,tcte_count,s_len,sa)->result;
-		  printf("Response: 0x%x \r\n",response);
-
-		  //Set BT5 advertisement data
-		  result = gecko_cmd_le_gap_bt5_set_adv_data(0,8,sizeof(periodic_adv_data),periodic_adv_data)->result;
-		  //printf("set_adv_data for periodic advertising data returns 0x%X\r\n",result);
-		  gecko_cmd_hardware_set_soft_timer(32768, 0, 0);//handle 0
-
+		  result2 = gecko_cmd_le_gap_start_advertising(1, le_gap_general_discoverable, le_gap_undirected_connectable)->result;
+		  printLog("Connection Advertising Response =%x \r\n",result2);
 		break;
 	  case gecko_evt_le_connection_opened_id:
 		  Connection = true;
@@ -249,7 +238,11 @@ void appMain(gecko_configuration_t *pconfig)
 	      * conn.interval min 20ms, max 40ms, slave latency 4 intervals,
 	     * supervision timeout 2 seconds
 	     * (These should be compliant with Apple Bluetooth Accessory Design Guidelines, both R7 and R8) */
-	     gecko_cmd_le_connection_set_timing_parameters(0x1, 24, 40, 0, 200, 0, 0xFFFF);
+	     gecko_cmd_le_connection_set_timing_parameters(_conn_handle, 24, 40, 0, 200, 0, 0xFFFF);
+
+	     //gecko_cmd_hardware_set_soft_timer(32768,2,0);
+
+
 	    break;
 	  case gecko_evt_le_connection_closed_id:
 		  gecko_cmd_cte_receiver_disable_connection_cte(sync_handle);
@@ -271,19 +264,7 @@ void appMain(gecko_configuration_t *pconfig)
 	      	_min_packet_size = _max_packet_size; /* Try to send maximum length packets whenever possible */
 	      	printLog("MTU exchanged: %d\r\n", evt->data.evt_gatt_mtu_exchanged.mtu);
 	  break;
-	  case gecko_evt_hardware_soft_timer_id:
-		  if (evt->data.evt_hardware_soft_timer.handle == 0){
-	          	for (int i = 0; i < 190; i++) {
-	          	    periodic_adv_data[i] = rand()%9;
-	          	}
 
-	          	//Reset the advertising data pointers to reflect the change in data
-	          	result = gecko_cmd_le_gap_bt5_set_adv_data(0,8,sizeof(periodic_adv_data),periodic_adv_data)->result;
-	          	//printf("set_adv_data for periodic advertising data returns 0x%X \r\n",result);
-		  }else{
-			  gecko_cmd_sync_close(sync_handle);
-		  }
-	          	break;
 	  case gecko_evt_le_gap_extended_scan_response_id:
 	  {
 
@@ -291,16 +272,21 @@ void appMain(gecko_configuration_t *pconfig)
 		  if(evt->data.evt_le_gap_extended_scan_response.packet_type & 0x80){
 			  printLog("got ext adv indication with tx_power = %d\r\n",
 					  evt->data.evt_le_gap_extended_scan_response.tx_power );
+			  printLog("UUID %p\r\n", &(evt->data.evt_le_gap_extended_scan_response.data.data[0]));
 			  if (findServiceInAdvertisement(&(evt->data.evt_le_gap_extended_scan_response.data.data[0]), evt->data.evt_le_gap_extended_scan_response.data.len) != 0) {
 
 				  printLog("found periodic sync service, attempting to open sync\r\n");
 
-				  uint16 skip = 1, timeout = 40; /* timeout was 20 */
-				  sync_handle = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
+				  uint16 skip = 1, timeout = 20; /* similar to connection params? */
+				  struct gecko_msg_sync_open_rsp_t *response;
+				  response = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
 						 skip,
 						 timeout,
 						 evt->data.evt_le_gap_extended_scan_response.address,
-						 evt->data.evt_le_gap_extended_scan_response.address_type)->sync;
+						 evt->data.evt_le_gap_extended_scan_response.address_type);
+				  sync_handle = response->sync;
+				  uint16 result4 = response->result;
+				  printLog("Sync Result %x\r\n", result4);
 				  printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
 
 
@@ -312,18 +298,25 @@ void appMain(gecko_configuration_t *pconfig)
 	  case gecko_evt_sync_opened_id:
 		  /* now that sync is open, we can stop scanning*/
 		  printLog("evt_sync_opened\r\n");
-		  gecko_cmd_hardware_set_soft_timer(0,1,0);//handle 1
+		  gecko_cmd_hardware_set_soft_timer(0,1,0);
 		  gecko_cmd_le_gap_end_procedure();
 
 		  //configure & enable cte after periodic sync established
-		  uint8 rhandle = sync_handle;
-		  uint8 slot_dur = 1;//switching and sampling are 1us each, other option is 2
-		  uint8 rcte_count = 0; //reporting all, other values are max cte's sampled in each periodic advertising interval
+		  uint8 Rhandle = sync_handle;
+		  uint8 Rslot_dur = 1;//switching and sampling are 1us each, other option is 2
+		  uint8 Rcte_count = 0; //reporting all, other values are max cte's sampled in each periodic advertising interval
+		  uint8 Rs_len = 1;
+		  uint8 Rsa[1] = { 0 };
 
 
-		  uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(rhandle, slot_dur,rcte_count,s_len,sa)->result;
+		  //uint8 test[1] = {7};
+		  //uint8 testsize = 1;
+		  //uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, GATTDB_GATT_SPP_DATA, testsize, test)->result;
+		  //printLog("Notification Response %x\r\n",result4);
 
-		  printf("Response: 0x%x\r\n",res);
+		  uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(Rhandle, Rslot_dur,Rcte_count,Rs_len,Rsa)->result;
+
+		  printf("CTE Receiver Response: 0x%x\r\n",res);
 		  break;
 
 	  case gecko_evt_sync_closed_id:
@@ -333,6 +326,28 @@ void appMain(gecko_configuration_t *pconfig)
 		  /* restart discovery */
 		  gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 		  break;
+
+	  case gecko_evt_hardware_soft_timer_id:
+	  {
+		  if(1==evt->data.evt_hardware_soft_timer.handle){
+			  gecko_cmd_sync_close(sync_handle);
+		  }else if(evt->data.evt_hardware_soft_timer.handle == 0){
+			  //for (int i = 0; i < 190; i++) {
+			       //periodic_adv_data[i] = rand()%9;
+			  //}
+			  //Reset the advertising data pointers to reflect the change in data
+			  //result = gecko_cmd_le_gap_bt5_set_adv_data(0,8,sizeof(periodic_adv_data),periodic_adv_data)->result;
+		  }else{
+			  //uint8 test[1] = {7};
+			  //uint8 testsize = 1;
+			  //uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, GATTDB_GATT_SPP_DATA, testsize, test)->result;
+			  ///////////////////////////////////////////////////////////////////////////////////////////////////////////
+			  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			  //printLog("Connection Handle %d\r\n",_conn_handle);
+			  //printLog("Notification Response %x\r\n",result4);
+		  }
+	  }
+	  break;
 
 	  case gecko_evt_gatt_server_user_write_request_id:
 
@@ -350,7 +365,7 @@ void appMain(gecko_configuration_t *pconfig)
 		}
 		break;
 	  case gecko_evt_cte_receiver_connectionless_iq_report_id: {
-		    printf("GOT CONNECTIONLESS IQ report\r\n");
+		    //printf("GOT CONNECTIONLESS IQ report\r\n");
 		    struct gecko_msg_cte_receiver_connectionless_iq_report_evt_t report = evt->data.evt_cte_receiver_connectionless_iq_report;
 			//printf("GOT SILABS IQ report\r\n");
 			//printf("status: %d, ch: %d, rssi: %d, ant:%d, cte:%d, duration:%d, len:%d\r\n", report.status,
@@ -376,6 +391,7 @@ void appMain(gecko_configuration_t *pconfig)
 static void bootMessage(struct gecko_msg_system_boot_evt_t *bootevt)
 {
 #if DEBUG_LEVEL
+  bd_addr local_addr;
   int i;
 
   printLog("stack version: %u.%u.%u\r\n", bootevt->major, bootevt->minor, bootevt->patch);
