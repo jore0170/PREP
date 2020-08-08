@@ -204,12 +204,12 @@ void appMain(gecko_configuration_t *pconfig)
 
           //configure & enable cte after periodic advertising enabled
 
-          uint8 handle = 0;
-          uint8 cte_length = 0x02;//was decimal 5, hex 2 is minimum (16us)
-          uint8 cte_type = 0;
-          uint8 cte_count = 1;
-          uint8 s_len = 1;
-          uint8 sa[1] = {0};
+          //uint8 handle = 0;
+          //uint8 cte_length = 0x02;//was decimal 5, hex 2 is minimum (16us)
+          //uint8 cte_type = 0;
+          //uint8 cte_count = 1;
+          //uint8 s_len = 1;
+          //uint8 sa[1] = {0};
 
           //uint16 response = gecko_cmd_cte_transmitter_enable_connectionless_cte(handle,cte_length,cte_type,cte_count,s_len,sa)->result;
           //printf("CTE Transmitter Response: 0x%x \r\n",response);
@@ -225,7 +225,7 @@ void appMain(gecko_configuration_t *pconfig)
 		  /* It is recommended to enable event le_gap_extended_scan_response
 		  which contains useful information for establishing a synchronization. */
 		  gecko_cmd_le_gap_set_discovery_extended_scan_response(true);
-		  gecko_cmd_le_gap_set_discovery_timing(le_gap_phy_1m,200,200);
+		  gecko_cmd_le_gap_set_discovery_timing(le_gap_phy_1m,200,200);//increasing scanning interval allows for more advertising packets to be received
 		  gecko_cmd_le_gap_set_discovery_type(le_gap_phy_1m,0);
 		  gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 
@@ -293,8 +293,11 @@ void appMain(gecko_configuration_t *pconfig)
 				  rssi = evt->data.evt_le_gap_extended_scan_response.rssi;
 				  printLog("Channel %d\r\n", channel);
 				  printLog("rssi %d\r\n", rssi);
-				  ble_circ_push(channel);
-				  ble_circ_push(rssi);
+				  if (Connection){
+					  ble_circ_push(channel);
+					  ble_circ_push(rssi);
+				  }
+
 			  }
 		  }
 	  }
