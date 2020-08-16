@@ -1,0 +1,1 @@
+Code illustrating how to create custom service and characteristic with zephyr's api.  Characteristic is set to read/write but translates wrong at the moment.  Device is connecatable under the name "BEACON"
