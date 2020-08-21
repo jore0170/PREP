@@ -14,16 +14,61 @@
  * sections of the MSLA applicable to Source Code.
  *
  ******************************************************************************/
-//PARALLEL
-#define BUFFER_LENGTH 512
+
 /* Bluetooth stack headers */
 #include "bg_types.h"
 #include "native_gecko.h"
 #include "gatt_db.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 #include "app.h"
-#include <stdlib.h>
+#include "retargetserial.h"
+
+/* Timer and GPIO libraries*/
+#include "em_timer.h"
+#include "em_gpio.h"
+#include "em_cmu.h"
+#include "em_msc.h"
+#include "em_prs.h"
+
+#define RX_OBS_PRS_CHANNEL 0
+#define BUFFER_LENGTH 512
+
+
+/* Print boot message */
+static void bootMessage(struct gecko_msg_system_boot_evt_t *bootevt);
+
+/* Flag for indicating DFU Reset must be performed */
+static uint8_t boot_to_dfu = 0;
+
+struct Advertising_Parameters {
+	bd_addr     local_addr;
+	bd_addr	    connection_addr;
+	uint8_t     ad_handle;
+	uint16_t 	min_interval;
+	uint16_t 	max_interval;
+	uint8_t		ch_map[5];
+};
+
+struct CTE_TX_params {
+	uint8_t		cte_length;
+	uint8_t		cte_type;
+	uint8_t		cte_count;
+	uint8_t		s_len;
+	uint8_t		sa[1];
+};
+struct CTE_RX_params {
+	uint8_t		sync_handle;
+	uint8_t		slot_dur;
+	uint8_t		cte_count;
+	uint8_t		s_len;
+	uint8_t		sa[1];
+};
+
+static struct Advertising_Parameters ad_params;
+static struct CTE_RX_params RX_params;
+static struct CTE_TX_params TX_params;
 
 typedef struct {
 	int8  cbuf[BUFFER_LENGTH];
@@ -56,12 +101,13 @@ uint8 temp[_max_packet_size];
 		ble_cbuf.size += 1; //add a byte back to the size
 	}
 
-uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, gattdb_Data, _max_packet_size, temp)->result;
+uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(0xff, gattdb_Data, _max_packet_size, temp)->result;
 printLog("Notification Response %x",result4);
-
-//connection handle of 1 because that is what the connection is defined as in advertiser
-//GATTDB_GATT_SPP_DATA = 26 because that is what the SPP example code had it macro'd as
+//1st param was _conn_handle
+/*try conn handle of 0xff to send no matter what*/
+//GATTDB_GATT_SPP_DATA = 26 because thats what it enums to after generating with gatt.xml
 ble_cbuf.data_length = 0;
+gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 return false;
 
 }
@@ -82,18 +128,14 @@ static void update_circ_readindex(BLE_CIRCULAR_BUF *index_struct, uint32_t updat
 index_struct->read_ptr = (index_struct->read_ptr + update_by)&(BUFFER_LENGTH-1);//macro for 511
 }
 
-static void reset_variables()
-{
-
-	_max_packet_size = 20;
-
+bool compare_bd_addr(bd_addr *address1, bd_addr *address2){
+	for(int i = 0;i<5;i++){
+		if(address1->addr[5-i] > address2->addr[i]){
+			return false;
+		}
+	}
+	return true;
 }
-
-/* Print boot message */
-static void bootMessage(struct gecko_msg_system_boot_evt_t *bootevt);
-
-/* Flag for indicating DFU Reset must be performed */
-static uint8_t boot_to_dfu = 0;
 //
 const uint8 periodicSyncService[16] = {0x81,0xc2,0x00,0x2d,0x31,0xf4,0xb0,0xbf,0x2b,0x42,0x49,0x68,0xc7,0x25,0x71,0x41};
 
@@ -122,6 +164,11 @@ static uint8_t findServiceInAdvertisement(uint8_t *data, uint8_t len)
   return 0;
 }
 
+static volatile uint32_t overflow = 5;
+//static volatile uint32_t* ad_data_ptr[4];
+uint8_t temp[16];
+
+
 /* Main application */
 void appMain(gecko_configuration_t *pconfig)
 {
@@ -129,276 +176,354 @@ void appMain(gecko_configuration_t *pconfig)
   pconfig->sleep.flags = 0;
 #endif
 
-  /* Set the maximum number of periodic sync allowed*/
-  pconfig->bluetooth.max_periodic_sync = 1;
-  pconfig->bluetooth.max_connections = 2;
+	/* Set the maximum number of periodic sync allowed*/
+	pconfig->bluetooth.max_periodic_sync = 1;
 
-  /* Initialize debug prints. Note: debug prints are off by default. See DEBUG_LEVEL in app.h */
-  initLog();
+	/* Set maximum number of periodic advertisers */
+	pconfig->bluetooth.max_advertisers = 2;
 
-  /* Initialize stack */
-  gecko_init(pconfig);
+	/* Initialize debug prints. Note: debug prints are off by default. See DEBUG_LEVEL in app.h */
+	initLog();
 
-  /* Initialize Periodic advertisement */
-    gecko_init_periodic_advertising();
+	/* Initialize stack */
+	gecko_init(pconfig);
 
-   //Initialize CTE Transmitter
-   //gecko_bgapi_class_cte_transmitter_init();
-	
-   //Initialize CTE Receiver
-   //gecko_bgapi_class_cte_receiver_init();
+	gecko_init_periodic_advertising();
 
+	uint8 sync_handle;
+	gecko_bgapi_class_sync_init();
 
-  uint8 sync_handle;
-  gecko_bgapi_class_sync_init();
+	// Initialize advertising parameters
+	ad_params.min_interval 	= 120;
+	ad_params.max_interval 	= 120;
+	ad_params.ad_handle 	= 0;
+	ad_params.ch_map[0]   	= 3;
+	for(int i = 1; i<5; i++)
+		ad_params.ch_map[i] = 0;
 
-  while (1) {
+	// Initialize CTE TX parameters
+	TX_params.cte_length 	= 0x14;
+	TX_params.cte_type		= 0x0;
+	TX_params.cte_count 	= 1;
+	TX_params.s_len 		= 1;
+	TX_params.sa[0] 		= 0;
 
-	  if (ble_cbuf.data_length >= _max_packet_size ){
-	  		  ble_circ_pop();
-	  	  }
-    /* Event pointer for handling events */
-    struct gecko_cmd_packet* evt;
-
-
-
-    /* if there are no events pending then the next call to gecko_wait_event() may cause
-     * device go to deep sleep. Make sure that debug prints are flushed before going to sleep */
-    if (!gecko_event_pending()) {
-      flushLog();
-    }
-
-    /* Check for stack event. This is a blocking event listener. If you want non-blocking please see UG136. */
-    evt = gecko_wait_event();
-
-    /* Handle events */
-	switch (BGLIB_MSG_ID(evt->header)) {
-	  /* This boot event is generated when the system boots up after reset.
-	   * Do not call any stack commands before receiving the boot event.
-	   * Here the system is set to start advertising immediately after boot procedure. */
-	  /* Array for advertisement data */
-	  static uint8 periodic_adv_data[191];
-
-	case gecko_evt_system_boot_id:
-		  reset_variables();
-		  gecko_cmd_gatt_set_max_mtu(247);
-
-		  bootMessage(&(evt->data.evt_system_boot));
-		  printLog("SYSTEM BOOTED\r\n");
-
-		  gecko_cmd_system_set_tx_power(0);
-		  gecko_cmd_le_gap_set_advertise_tx_power(0,0);// was (0,30)
-          gecko_cmd_le_gap_set_advertise_timing(0, 160, 160, 0, 0);
-
-          /* turn off legacy PDU flag*/
-          gecko_cmd_le_gap_clear_advertise_configuration(0,1);
-
-          // Start extended advertising
-          uint16 result = gecko_cmd_le_gap_start_advertising(0,le_gap_general_discoverable, le_gap_non_connectable)->result;                    printf("le_gap_start_advertising() returns 0x%X\r\n", result);
-
-          // Start periodic advertising
-          /* adv set #1 , 100 ms min/max interval, include tx power in PDU*/
-          //min and max were 160
-          result = gecko_cmd_le_gap_start_periodic_advertising(0,0x06,0x06,1)->result;
-          printf("start_periodic_advertising returns 0x%X\r\n",result);
-
-          //configure & enable cte after periodic advertising enabled
-
-          //uint8 handle = 0;
-          //uint8 cte_length = 0x02;//was decimal 5, hex 2 is minimum (16us)
-          //uint8 cte_type = 0;
-          //uint8 cte_count = 1;
-          //uint8 s_len = 1;
-          //uint8 sa[1] = {0};
-
-          //uint16 response = gecko_cmd_cte_transmitter_enable_connectionless_cte(handle,cte_length,cte_type,cte_count,s_len,sa)->result;
-          //printf("CTE Transmitter Response: 0x%x \r\n",response);
+	// Initialize CTE RX parameters
+	RX_params.slot_dur		= 1;
+	RX_params.cte_count 	= 0;
+	RX_params.s_len 		= 1;
+	RX_params.sa[0] 		= 0;
 
 
-          //Set BT5 advertisement data
-          result = gecko_cmd_le_gap_bt5_set_adv_data(0,8,sizeof(periodic_adv_data),periodic_adv_data)->result;
-          printf("set_adv_data for periodic advertising data returns 0x%X\r\n",result);
-          gecko_cmd_hardware_set_soft_timer(32768, 0, 0);
+	//Initialize CTE Reciever & Transmitter
+	//gecko_bgapi_class_cte_receiver_init();
+	//gecko_bgapi_class_cte_transmitter_init();
 
-          /////////////////////////////////////////////////////////////////////////////////////////
+	uint16 result;
+	//uint32_t offset;
+	uint32_t* data = malloc(16);
+	uint8_t itr = 0;
+	//uint8_t* ram = malloc(184*10);
 
-		  /* It is recommended to enable event le_gap_extended_scan_response
-		  which contains useful information for establishing a synchronization. */
-		  gecko_cmd_le_gap_set_discovery_extended_scan_response(true);
-		  gecko_cmd_le_gap_set_discovery_timing(le_gap_phy_1m,200,200);//increasing scanning interval allows for more advertising packets to be received
-		  gecko_cmd_le_gap_set_discovery_type(le_gap_phy_1m,0);
-		  gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
+	while (1) {
+		if (ble_cbuf.data_length >= _max_packet_size ){
+					  gecko_cmd_le_gap_end_procedure();
+			  		  ble_circ_pop();
+			  	  }
+		/* Event pointer for handling events */
+		struct gecko_cmd_packet* evt;
 
-		  result2 = gecko_cmd_le_gap_start_advertising(1, le_gap_general_discoverable, le_gap_undirected_connectable)->result;
-		  printLog("Connection Advertising Response =%x \r\n",result2);
-		break;
-	  case gecko_evt_le_connection_opened_id:
-		  Connection = true;
-	       _conn_handle = evt->data.evt_le_connection_opened.connection;
-	       printLog("Connected\r\n");
-	      /* Request connection parameter update.
-	      * conn.interval min 20ms, max 40ms, slave latency 4 intervals,
-	     * supervision timeout 2 seconds
-	     * (These should be compliant with Apple Bluetooth Accessory Design Guidelines, both R7 and R8) */
-	     gecko_cmd_le_connection_set_timing_parameters(_conn_handle, 24, 40, 0, 200, 0, 0xFFFF);
-
-	     //gecko_cmd_hardware_set_soft_timer(32768,2,0);
-
-
-	    break;
-	  case gecko_evt_le_connection_closed_id:
-		  //gecko_cmd_cte_receiver_disable_connection_cte(sync_handle);
-		  printf("Connection Closed\r\n");\
-
-		/* Check if need to boot to dfu mode */
-		if (boot_to_dfu) {
-		  /* Enter to DFU OTA mode */
-		  gecko_cmd_system_reset(2);
-		} else {
-		  /* Restart advertising after client has disconnected */
-		  gecko_cmd_le_gap_start_advertising(0, le_gap_general_discoverable, le_gap_connectable_scannable);
+		/* if there are no events pending then the next call to gecko_wait_event() may cause
+		* device go to deep sleep. Make sure that debug prints are flushed before going to sleep */
+		if (!gecko_event_pending()) {
+		flushLog();
 		}
-		break;
-	  case gecko_evt_gatt_mtu_exchanged_id:
-	      	/* Calculate maximum data per one notification / write-without-response, this depends on the MTU.
-	      	 * up to ATT_MTU-3 bytes can be sent at once  */
-	      	_max_packet_size = evt->data.evt_gatt_mtu_exchanged.mtu - 3;
-	      	_min_packet_size = _max_packet_size; /* Try to send maximum length packets whenever possible */
-	      	printLog("MTU exchanged: %d\r\n", evt->data.evt_gatt_mtu_exchanged.mtu);
-	  break;
 
-	  case gecko_evt_le_gap_extended_scan_response_id:
-	  {
+		/* Check for stack event. This is a blocking event listener. If you want non-blocking please see UG136. */
 
-		  /* only look at extended advertisements */
-		  if(evt->data.evt_le_gap_extended_scan_response.packet_type & 0x80){
-			  printLog("got ext adv indication with tx_power = %d\r\n",
+		result = gecko_cmd_le_gap_bt5_set_adv_data(0, 8, sizeof(uint32_t)*4, temp)->result;
+		evt = gecko_wait_event();
+
+		/* Handle events */
+		switch (BGLIB_MSG_ID(evt->header)) {
+			case gecko_evt_system_boot_id:
+
+				gecko_cmd_gatt_set_max_mtu(247);
+
+				bootMessage(&(evt->data.evt_system_boot));
+				printLog("Periodic Sync scanner system boot\r\n");
+
+				gecko_cmd_system_set_tx_power(100);
+				gecko_cmd_le_gap_set_advertise_tx_power(0,30);
+				gecko_cmd_le_gap_set_advertise_timing(0, ad_params.max_interval, 160, 0, 0);
+				gecko_cmd_le_gap_clear_advertise_configuration(0,1);
+				result = gecko_cmd_le_gap_set_data_channel_classification(5, ad_params.ch_map)->result;
+				printLog("set data channel classification: %d\r\n", result);
+
+				result = gecko_cmd_le_gap_start_advertising(0,le_gap_general_discoverable, le_gap_non_connectable)->result;
+				printLog("le_gap_start_advertising() returns 0x%X\r\n", result);
+
+				/* adv set #1 , 100 ms min/max interval, include tx power in PDU*/
+				//TIMER_Enable(TIMER1,true);
+				result = gecko_cmd_le_gap_start_periodic_advertising(0,ad_params.min_interval,ad_params.max_interval,1)->result;
+				printLog("start_periodic_advertising returns 0x%X\r\n",result);
+
+				//Set BT5 advertisement data
+
+				//result = gecko_cmd_le_gap_bt5_set_adv_data(0,8,sizeof(ad_data),ad_data)->result;
+				//printLog("set_adv_data for periodic advertising data returns 0x%X\r\n",result);
+
+				/* It is recommended to enable event le_gap_extended_scan_response
+				which contains useful information for establishing a synchronization. */
+				gecko_cmd_le_gap_set_discovery_extended_scan_response(true);
+				gecko_cmd_le_gap_set_discovery_timing(le_gap_phy_1m,200,200);
+				gecko_cmd_le_gap_set_discovery_type(le_gap_phy_1m,0);
+				//gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
+				////////////////////////////////////////////////////////////////////////////////
+				result = gecko_cmd_le_gap_start_advertising(1, le_gap_general_discoverable, le_gap_undirected_connectable)->result;
+				printLog("Connection Advertising Response =%x \r\n",result);
+			break;
+			case gecko_evt_le_connection_opened_id:
+					  Connection = true;
+				       _conn_handle = evt->data.evt_le_connection_opened.connection;
+				       printLog("Connected\r\n");
+				      /* Request connection parameter update.
+				      * conn.interval min 20ms, max 40ms, slave latency 4 intervals,
+				     * supervision timeout 2 seconds
+				     * (These should be compliant with Apple Bluetooth Accessory Design Guidelines, both R7 and R8) */
+				     gecko_cmd_le_connection_set_timing_parameters(_conn_handle, 24, 40, 0, 200, 0, 0xFFFF);
+					gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
+
+				     //gecko_cmd_hardware_set_soft_timer(32768,2,0);
+
+
+				    break;
+
+			case gecko_evt_le_connection_closed_id:
+				/* Check if need to boot to dfu mode */
+				if (boot_to_dfu) {
+				/* Enter to DFU OTA mode */
+				gecko_cmd_system_reset(2);
+				} else {
+				/* Restart advertising after client has disconnected */
+				gecko_cmd_le_gap_start_advertising(0, le_gap_general_discoverable, le_gap_connectable_scannable);
+				}
+			break;
+			case gecko_evt_gatt_mtu_exchanged_id:
+				      	/* Calculate maximum data per one notification / write-without-response, this depends on the MTU.
+				      	 * up to ATT_MTU-3 bytes can be sent at once  */
+				      	_max_packet_size = evt->data.evt_gatt_mtu_exchanged.mtu - 3;
+				      	_min_packet_size = _max_packet_size; /* Try to send maximum length packets whenever possible */
+				      	printLog("MTU exchanged: %d\r\n", evt->data.evt_gatt_mtu_exchanged.mtu);
+				  break;
+			case gecko_evt_le_gap_extended_scan_response_id: {
+				if(compare_bd_addr(&ad_params.local_addr, &evt->data.evt_le_gap_extended_scan_response.address)){
+					break;
+				}
+				/* only look at extended advertisements */
+				if(evt->data.evt_le_gap_extended_scan_response.packet_type & 0x80){
+					printLog("got ext adv indication with tx_power = %d\r\n",
 					  evt->data.evt_le_gap_extended_scan_response.tx_power );
-			  if (findServiceInAdvertisement(&(evt->data.evt_le_gap_extended_scan_response.data.data[0]), evt->data.evt_le_gap_extended_scan_response.data.len) != 0) {
+					if (findServiceInAdvertisement(&(evt->data.evt_le_gap_extended_scan_response.data.data[0]), evt->data.evt_le_gap_extended_scan_response.data.len) != 0) {
 
-				  printLog("found periodic sync service, attempting to open sync\r\n");
+						printLog("found periodic sync service, attempting to open sync\r\n");
 
-				  uint16 skip = 1, timeout = 20; /* similar to connection params? */
-				  struct gecko_msg_sync_open_rsp_t *response;
-				  //response = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
-						 //skip,
-						 //timeout,
-						 //evt->data.evt_le_gap_extended_scan_response.address,
-						 //evt->data.evt_le_gap_extended_scan_response.address_type);
-				  //sync_handle = response->sync;
-				  //uint16 result4 = response->result;
-				  //printLog("Sync Result %x\r\n", result4);
-				  //printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
-				  channel = evt->data.evt_le_gap_extended_scan_response.channel;
-				  rssi = evt->data.evt_le_gap_extended_scan_response.rssi;
-				  printLog("Channel %d\r\n", channel);
-				  printLog("rssi %d\r\n", rssi);
-				  if (Connection){
-					  ble_circ_push(channel);
-					  ble_circ_push(rssi);
-				  }
+						//uint16 skip = 1, timeout = 20;
+						//sync_handle = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
+							 //skip,
+							 //timeout,
+							 //evt->data.evt_le_gap_extended_scan_response.address,
+							 //evt->data.evt_le_gap_extended_scan_response.address_type)->sync;
+						printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
+						//printLog("Channel %d", evt->data.evt_le_gap_extended_scan_response.channel);
+						//printLog("RSSI %d", evt->data.evt_le_gap_extended_scan_response.rssi);
+						if (Connection){
+							ble_circ_push(evt->data.evt_le_gap_extended_scan_response.channel);
+							ble_circ_push(evt->data.evt_le_gap_extended_scan_response.rssi);
+						}
+					}
+				}
+			}
+			break;
 
-			  }
-		  }
-	  }
-	  break;
+			case gecko_evt_sync_opened_id:
+				/* now that sync is open, we can stop scanning*/
+				printLog("evt_sync_opened\r\n");
+				gecko_cmd_le_gap_end_procedure();
+				result = gecko_cmd_cte_receiver_enable_connectionless_cte(sync_handle,
+								RX_params.slot_dur, RX_params.cte_count, RX_params.s_len, RX_params.sa)->result;
+				printLog("Result of gecko_cmd_cte_receiver_enable_connectionless_cte: 0x%x\r\n",result);
+				TIMER_Enable(TIMER0,true);
+			break;
 
-	  case gecko_evt_sync_opened_id:
-		  /* now that sync is open, we can stop scanning*/
-		  printLog("evt_sync_opened\r\n");
-		  gecko_cmd_hardware_set_soft_timer(0,1,0);
-		  gecko_cmd_le_gap_end_procedure();
+			case gecko_evt_sync_closed_id:
+				printLog("periodic sync closed. reason 0x%2X, sync handle %d",
+				evt->data.evt_sync_closed.reason,
+				evt->data.evt_sync_closed.sync);
+				gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
+			break;
 
-		  //configure & enable cte after periodic sync established
-		  uint8 Rhandle = sync_handle;
-		  uint8 Rslot_dur = 1;//switching and sampling are 1us each, other option is 2
-		  uint8 Rcte_count = 0; //reporting all, other values are max cte's sampled in each periodic advertising interval
-		  uint8 Rs_len = 1;
-		  uint8 Rsa[1] = { 0 };
+			case gecko_evt_sync_data_id:
+				printLog("PERIODIC PACKET RECIEVED\r\n");
+				printLog("%d\r\n", evt->data.evt_sync_data.data.len);
+				printLog("DATA: %lu %lu %lu %lu \r\n", data[0], data[1], data[2], data[3]);
+				data = (uint32_t*) &(evt->data.evt_sync_data.data.data);
+				//memcpy(num, data+2,sizeof(uint32_t));
+				//(*num)++;
+				//memcpy(other_time, data, sizeof(uint32_t));
+				//memcpy(other_overflow, data+3, sizeof(uint32_t));
+				TIMER_CounterSet(TIMER0, 0);
+				overflow = 0;
+			break;
+			/* Events related to OTA upgrading
+			----------------------------------------------------------------------------- */
 
-		  //uint8 test[1] = {7};
-		  //uint8 testsize = 1;
-		  //uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, GATTDB_GATT_SPP_DATA, testsize, test)->result;
-		  //printLog("Notification Response %x\r\n",result4);
+			/* Check if the user-type OTA Control Characteristic was written.
+			* If ota_control was written, boot the device into Device Firmware Upgrade (DFU) mode. */
+			case gecko_evt_gatt_server_user_write_request_id:
 
-		  //uint16 res = gecko_cmd_cte_receiver_enable_connectionless_cte(Rhandle, Rslot_dur,Rcte_count,Rs_len,Rsa)->result;
+				if (evt->data.evt_gatt_server_user_write_request.characteristic == gattdb_ota_control) {
+					/* Set flag to enter to OTA mode */
+					boot_to_dfu = 1;
+					/* Send response to Write Request */
+					gecko_cmd_gatt_server_send_user_write_response(
+					evt->data.evt_gatt_server_user_write_request.connection,
+					gattdb_ota_control,
+					bg_err_success);
 
-		  //printf("CTE Receiver Response: 0x%x\r\n",res);
+					/* Close connection to enter to DFU OTA mode */
+					gecko_cmd_le_connection_close(evt->data.evt_gatt_server_user_write_request.connection);
+				}
+			break;
+
+			case gecko_evt_cte_receiver_connectionless_iq_report_id: {
+				printLog("CTE REPORT\r\n");
+
+				struct gecko_msg_cte_receiver_connectionless_iq_report_evt_t *report =
+				&(evt->data.evt_cte_receiver_connectionless_iq_report);
+
+				printLog(
+				"status: %d, ch: %d, rssi: %d, ant:%d, cte:%d, duration:%d, sync:%d, event: %d, len:%d\r\n",
+				report->status, report->channel, report->rssi, report->rssi_antenna_id,
+				report->cte_type, report->slot_durations, report->sync, report->event_counter,
+				report->samples.len);
+
+				/*
+				for(int i=0; i<4;i++)
+					RETARGET_WriteChar(0xFF);
+				RETARGET_WriteChar(report->channel);
+				RETARGET_WriteChar(report->samples.len);
+				RETARGET_WriteChar(num);
+				uint8_t* temp = (uint8_t*)&report->event_counter;
+				RETARGET_WriteChar(temp[0]);
+				RETARGET_WriteChar(temp[1]);
+				for (int i=0; i<report->samples.len; i++) {
+					RETARGET_WriteChar(report->samples.data[i]);
+				}
+				RETARGET_WriteChar('\r');
+				RETARGET_WriteChar('\n');
+				*/
+
+				//uint8_t* userDataPage = ram;
+				//offset = (16+report->samples.len);
+				if(itr < 9){
+					//updateTime(&delta, &old, ad_data);
+					//uint8_t* temp = (uint8_t*)&report->event_counter;
+					//uint8_t* temp2 = (uint8_t*)other_time;
+					//uint8_t* temp3 = (uint8_t*)num;
+					//uint8_t* temp4 = (uint8_t*)other_overflow;
+					//uint8_t preData[] = {
+						//report->channel,
+						//report->samples.len,
+						//temp[0],
+						//temp[1],
+						//temp2[0],
+						//temp2[1],
+						//temp2[2],
+						//temp2[3],
+						//temp3[0],
+						//temp3[1],
+						//temp3[2],
+						//temp3[3],
+						//temp4[0],
+						//temp4[1],
+						//temp4[2],
+						//temp4[3]
+
+					};
+					//memcpy(userDataPage+offset*itr, preData, sizeof(preData));
+					//memcpy(userDataPage+offset*itr+sizeof(preData), &report->samples.data, report->samples.len);
+
+				}
+				itr++;
+
+				if( itr == 8 ){
+					uint8_t* ch = malloc(1);
+					uint8_t* len = malloc(1);
+					uint8_t* event_num = malloc(2);
+					uint8_t* num = malloc(4);
+					uint8_t* time = malloc(4);
+					uint8_t* overflow_n = malloc(4);
+					//uint8_t* data = malloc(report->samples.len);
+					for(int k=0; k<itr; k++){
+						//setTemp();
+						//result = gecko_cmd_le_gap_bt5_set_adv_data(0, 8, sizeof(uint32_t)*4, temp)->result;
+						for(int i=0; i< 4; i++){
+							RETARGET_WriteChar(0xFF);
+
+						//memcpy(ch, userDataPage + 0*sizeof(uint8_t) + offset*k,sizeof(uint8_t));
+						RETARGET_WriteChar(*ch);
+
+						//memcpy(len, userDataPage + 1*sizeof(uint8_t) + offset*k,sizeof(uint8_t));
+						RETARGET_WriteChar(*len);
+
+						//memcpy(event_num, userDataPage + 2*sizeof(uint8_t) + offset*k,sizeof(uint16_t));
+						RETARGET_WriteChar(event_num[0]);
+						RETARGET_WriteChar(event_num[1]);
+
+						//memcpy(num, userDataPage + 4*sizeof(uint8_t) + offset*k,sizeof(uint32_t));
+						for(int i=0; i<4; i++)
+							RETARGET_WriteChar(num[i]);
+
+						//memcpy(time, userDataPage + 8*sizeof(uint8_t) + offset*k,sizeof(uint32_t));
+						for(int i=0; i<4; i++)
+							RETARGET_WriteChar(time[i]);
+
+						//memcpy(overflow_n, userDataPage + 12*sizeof(uint8_t) + offset*k,sizeof(uint32_t));
+						for(int i=0; i<4; i++)
+							RETARGET_WriteChar(overflow_n[i]);
 
 
-		  break;
+						//memcpy(data, userDataPage + 16*sizeof(uint8_t) + offset*k, report->samples.len);
+						//for (int i=0; i<report->samples.len; i++) {
+							//RETARGET_WriteChar(data[i]);
+						//}
 
-	  case gecko_evt_sync_closed_id:
-		  printLog("periodic sync closed. reason 0x%2X, sync handle %d\r\n",
-				  evt->data.evt_sync_closed.reason,
-				  evt->data.evt_sync_closed.sync);
-		  /* restart discovery */
-		  gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
-		  break;
+						RETARGET_WriteChar('\r');
+						RETARGET_WriteChar('\n');
+					}
+					free(ch);
+					free(len);
+					free(data);
+					free(event_num);
+					free(overflow_n);
+					free(time);
+					itr = 0;
+				}
 
-	  case gecko_evt_hardware_soft_timer_id:
-	  {
-		  if(1==evt->data.evt_hardware_soft_timer.handle){
-			  gecko_cmd_sync_close(sync_handle);
-		  }else if(evt->data.evt_hardware_soft_timer.handle == 0){
-			  //for (int i = 0; i < 190; i++) {
-			       //periodic_adv_data[i] = rand()%9;
-			  //}
-			  //Reset the advertising data pointers to reflect the change in data
-			  //result = gecko_cmd_le_gap_bt5_set_adv_data(0,8,sizeof(periodic_adv_data),periodic_adv_data)->result;
-		  }else{
-			  //uint8 test[1] = {7};
-			  //uint8 testsize = 1;
-			  //uint16 result4 = gecko_cmd_gatt_server_send_characteristic_notification(_conn_handle, GATTDB_GATT_SPP_DATA, testsize, test)->result;
-			  ///////////////////////////////////////////////////////////////////////////////////////////////////////////
-			  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-			  //printLog("Connection Handle %d\r\n",_conn_handle);
-			  //printLog("Notification Response %x\r\n",result4);
-		  }
-	  }
-	  break;
+			}
+			break;
 
-	  case gecko_evt_gatt_server_user_write_request_id:
-
-		if (evt->data.evt_gatt_server_user_write_request.characteristic == gattdb_ota_control) {
-		  /* Set flag to enter to OTA mode */
-		  boot_to_dfu = 1;
-		  /* Send response to Write Request */
-		  gecko_cmd_gatt_server_send_user_write_response(
-			evt->data.evt_gatt_server_user_write_request.connection,
-			gattdb_ota_control,
-			bg_err_success);
-
-		  /* Close connection to enter to DFU OTA mode */
-		  gecko_cmd_le_connection_close(evt->data.evt_gatt_server_user_write_request.connection);
+			default:
+			break;
 		}
-		break;
-	  case gecko_evt_cte_receiver_connectionless_iq_report_id: {
-		    //printf("GOT CONNECTIONLESS IQ report\r\n");
-		    struct gecko_msg_cte_receiver_connectionless_iq_report_evt_t report = evt->data.evt_cte_receiver_connectionless_iq_report;
-			//printf("GOT SILABS IQ report\r\n");
-			//printf("status: %d, ch: %d, rssi: %d, ant:%d, cte:%d, duration:%d, len:%d\r\n", report.status,
-					//report.channel, report.rssi, report.rssi_antenna_id, report.cte_type, report.slot_durations,
-					//report.samples.len);
-			//for (int i=0; i<report.samples.len; i++) {
-				//RETARGET_WriteChar(report.samples.data[i]);
-			//}
-		    if (Connection){
-			ble_circ_push(report.channel);
-			ble_circ_push(report.rssi);
-		    }
-		    //printf("\r\n");
-		  break;
-	  }
-	  default:
-		break;
 	}
-  }
 }
 
 /* Print stack version and local Bluetooth address as boot message */
 static void bootMessage(struct gecko_msg_system_boot_evt_t *bootevt)
 {
+	ad_params.local_addr = gecko_cmd_system_get_bt_address()->address;
 #if DEBUG_LEVEL
   bd_addr local_addr;
   int i;
