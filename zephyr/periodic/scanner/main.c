@@ -5,7 +5,7 @@
  *
  * SPDX-License-Identifier: Apache-2.0
  */
-
+//try copying jrey9/ncs/v1.3 into C:\PREP\ncs
 #include <zephyr/types.h>
 #include <stddef.h>
 #include <sys/printk.h>
@@ -41,21 +41,38 @@
 };*/
 
 const struct bt_le_per_adv_sync_param sync_param = {
-  .addr = , //fbab83efeece
+  .addr = , //fbab83efeece -> value seems to change each power cycle
   .sid = NULL,
   .options = BT_LE_PER_ADV_SYNC_OPT_NONE,
   .skip = 0x01,
   .timeout =  0x0, 
 };
 
-static void per_scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
-		    struct net_buf_simple *buf)
-{
-	//mfg_data[2]++;
+/*The periodic advertising has been successfully synced.
+This callback notifies the application that the periodic advertising set has been successfully synced, 
+and will now start to receive periodic advertising reports.*/
+void synced_cb(struct bt_le_per_adv_sync *sync, struct bt_le_per_adv_sync_synced_info *info){
 
-    gpio_pin_set(dev, PIN, (int)led_is_on);
-		led_is_on = !led_is_on;
 }
+/*The periodic advertising sync has been terminated.
+This callback notifies the application that the periodic advertising sync has been terminated, either by local request,
+remote request or because due to missing data, e.g. by being out of range or sync.*/
+void term_cb(struct bt_le_per_adv_sync *sync, const struct bt_le_per_adv_sync_term_info *info){
+
+}
+/*Periodic advertising data received.
+This callback notifies the application of an periodic advertising report.*/
+void recv_cb(struct bt_le_per_adv_sync *sync, const struct bt_le_per_adv_sync_recv_info *info, struct net_buf_simple *buf){
+    gpio_pin_set(dev, PIN, (int)led_is_on);//turn on and off the led for received data
+    led_is_on = !led_is_on;
+}
+
+const struct bt_le_per_adv_sync_cb cb = {
+    .synced = synced_cb,
+    .term = term_cb,
+    .recv = recv_cb,
+};
+
 
 void main(void)
 {
@@ -79,7 +96,7 @@ void main(void)
 		return;
 	}
 
-	err = bt_le_per_adv_sync_create(*param, const struct bt_le_per_adv_sync_cb *cb, struct bt_le_per_adv_sync **out_sync)
+	err = bt_le_per_adv_sync_create(&sync_param, &cb, struct bt_le_per_adv_sync **out_sync)
 
 	err = bt_le_scan_start(&scan_param, scan_cb);
 	if (err) {
