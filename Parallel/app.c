@@ -95,7 +95,7 @@ static void update_circ_readindex(BLE_CIRCULAR_BUF *index_struct, uint32_t updat
 
 bool ble_circ_pop(){
 uint8 temp[_max_packet_size];
-	for(int i = 0; i < ble_cbuf.data_length; i++){
+	for(int i = 0; i < _max_packet_size; i++){
 		temp[i] = ble_cbuf.cbuf[ble_cbuf.read_ptr]; //move the packet to a print variable for transmission
 		update_circ_readindex(&ble_cbuf, 1); //update
 		ble_cbuf.size += 1; //add a byte back to the size
@@ -107,7 +107,6 @@ printLog("Notification Response %x",result4);
 /*try conn handle of 0xff to send no matter what*/
 //GATTDB_GATT_SPP_DATA = 26 because thats what it enums to after generating with gatt.xml
 ble_cbuf.data_length = 0;
-gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 return false;
 
 }
@@ -164,7 +163,7 @@ static uint8_t findServiceInAdvertisement(uint8_t *data, uint8_t len)
   return 0;
 }
 
-static volatile uint32_t overflow = 5;
+//static volatile uint32_t overflow = 5;
 //static volatile uint32_t* ad_data_ptr[4];
 uint8_t temp[16];
 
@@ -216,18 +215,17 @@ void appMain(gecko_configuration_t *pconfig)
 
 
 	//Initialize CTE Reciever & Transmitter
-	//gecko_bgapi_class_cte_receiver_init();
-	//gecko_bgapi_class_cte_transmitter_init();
+	gecko_bgapi_class_cte_receiver_init();
+	gecko_bgapi_class_cte_transmitter_init();
 
 	uint16 result;
-	//uint32_t offset;
+	uint32_t offset;
 	uint32_t* data = malloc(16);
 	uint8_t itr = 0;
-	//uint8_t* ram = malloc(184*10);
+	uint8_t* ram = malloc(184*10);
 
 	while (1) {
 		if (ble_cbuf.data_length >= _max_packet_size ){
-					  gecko_cmd_le_gap_end_procedure();
 			  		  ble_circ_pop();
 			  	  }
 		/* Event pointer for handling events */
@@ -255,7 +253,7 @@ void appMain(gecko_configuration_t *pconfig)
 
 				gecko_cmd_system_set_tx_power(100);
 				gecko_cmd_le_gap_set_advertise_tx_power(0,30);
-				gecko_cmd_le_gap_set_advertise_timing(0, ad_params.max_interval, 160, 0, 0);
+				gecko_cmd_le_gap_set_advertise_timing(0, 0x20, 0x20, 0, 0);//0,ad_params.max_interval,160,0,0
 				gecko_cmd_le_gap_clear_advertise_configuration(0,1);
 				result = gecko_cmd_le_gap_set_data_channel_classification(5, ad_params.ch_map)->result;
 				printLog("set data channel classification: %d\r\n", result);
@@ -265,7 +263,7 @@ void appMain(gecko_configuration_t *pconfig)
 
 				/* adv set #1 , 100 ms min/max interval, include tx power in PDU*/
 				//TIMER_Enable(TIMER1,true);
-				result = gecko_cmd_le_gap_start_periodic_advertising(0,ad_params.min_interval,ad_params.max_interval,1)->result;
+				result = gecko_cmd_le_gap_start_periodic_advertising(0,0x06,0x06,1)->result;
 				printLog("start_periodic_advertising returns 0x%X\r\n",result);
 
 				//Set BT5 advertisement data
@@ -278,7 +276,7 @@ void appMain(gecko_configuration_t *pconfig)
 				gecko_cmd_le_gap_set_discovery_extended_scan_response(true);
 				gecko_cmd_le_gap_set_discovery_timing(le_gap_phy_1m,200,200);
 				gecko_cmd_le_gap_set_discovery_type(le_gap_phy_1m,0);
-				//gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
+				gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
 				////////////////////////////////////////////////////////////////////////////////
 				result = gecko_cmd_le_gap_start_advertising(1, le_gap_general_discoverable, le_gap_undirected_connectable)->result;
 				printLog("Connection Advertising Response =%x \r\n",result);
@@ -293,8 +291,18 @@ void appMain(gecko_configuration_t *pconfig)
 				     * (These should be compliant with Apple Bluetooth Accessory Design Guidelines, both R7 and R8) */
 				     gecko_cmd_le_connection_set_timing_parameters(_conn_handle, 24, 40, 0, 200, 0, 0xFFFF);
 					gecko_cmd_le_gap_start_discovery(le_gap_phy_1m,le_gap_discover_observation);
+					//configure & enable cte after periodic advertising enabled
+					uint8 handle = 0;
+					uint8 cte_length = 0x02;//was decimal 5, hex 2 is minimum (16us)
+					uint8 cte_type = 0;
+					uint8 cte_count = 1;
+					uint8 s_len = 1;
+					uint8 sa[1] = {0};
 
-				     //gecko_cmd_hardware_set_soft_timer(32768,2,0);
+					uint16 response = gecko_cmd_cte_transmitter_enable_connectionless_cte(handle,cte_length,cte_type,cte_count,s_len,sa)->result;
+					printf("CTE Transmitter Response: 0x%x \r\n",response);
+
+				     gecko_cmd_hardware_set_soft_timer(32768,2,0);
 
 
 				    break;
@@ -328,19 +336,19 @@ void appMain(gecko_configuration_t *pconfig)
 
 						printLog("found periodic sync service, attempting to open sync\r\n");
 
-						//uint16 skip = 1, timeout = 20;
-						//sync_handle = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
-							 //skip,
-							 //timeout,
-							 //evt->data.evt_le_gap_extended_scan_response.address,
-							 //evt->data.evt_le_gap_extended_scan_response.address_type)->sync;
+						uint16 skip = 1, timeout = 200; //was 20
+						sync_handle = gecko_cmd_sync_open(evt->data.evt_le_gap_extended_scan_response.adv_sid,
+							 skip,
+							 timeout,
+							 evt->data.evt_le_gap_extended_scan_response.address,
+							 evt->data.evt_le_gap_extended_scan_response.address_type)->sync;
 						printLog("cmd_sync_open() sync = 0x%2X\r\n", sync_handle);
 						//printLog("Channel %d", evt->data.evt_le_gap_extended_scan_response.channel);
 						//printLog("RSSI %d", evt->data.evt_le_gap_extended_scan_response.rssi);
-						if (Connection){
-							ble_circ_push(evt->data.evt_le_gap_extended_scan_response.channel);
-							ble_circ_push(evt->data.evt_le_gap_extended_scan_response.rssi);
-						}
+						//if (Connection){
+							//ble_circ_push(evt->data.evt_le_gap_extended_scan_response.channel);
+							//ble_circ_push(evt->data.evt_le_gap_extended_scan_response.rssi);
+						//}
 					}
 				}
 			}
@@ -353,7 +361,7 @@ void appMain(gecko_configuration_t *pconfig)
 				result = gecko_cmd_cte_receiver_enable_connectionless_cte(sync_handle,
 								RX_params.slot_dur, RX_params.cte_count, RX_params.s_len, RX_params.sa)->result;
 				printLog("Result of gecko_cmd_cte_receiver_enable_connectionless_cte: 0x%x\r\n",result);
-				TIMER_Enable(TIMER0,true);
+				//TIMER_Enable(TIMER0,true);
 			break;
 
 			case gecko_evt_sync_closed_id:
@@ -364,16 +372,16 @@ void appMain(gecko_configuration_t *pconfig)
 			break;
 
 			case gecko_evt_sync_data_id:
-				printLog("PERIODIC PACKET RECIEVED\r\n");
-				printLog("%d\r\n", evt->data.evt_sync_data.data.len);
-				printLog("DATA: %lu %lu %lu %lu \r\n", data[0], data[1], data[2], data[3]);
-				data = (uint32_t*) &(evt->data.evt_sync_data.data.data);
+				//printLog("PERIODIC PACKET RECIEVED\r\n");
+				//printLog("%d\r\n", evt->data.evt_sync_data.data.len);
+				//printLog("DATA: %lu %lu %lu %lu \r\n", data[0], data[1], data[2], data[3]);
+				//data = (uint32_t*) &(evt->data.evt_sync_data.data.data);
 				//memcpy(num, data+2,sizeof(uint32_t));
 				//(*num)++;
 				//memcpy(other_time, data, sizeof(uint32_t));
 				//memcpy(other_overflow, data+3, sizeof(uint32_t));
-				TIMER_CounterSet(TIMER0, 0);
-				overflow = 0;
+				//TIMER_CounterSet(TIMER0, 0);
+				//overflow = 0;
 			break;
 			/* Events related to OTA upgrading
 			----------------------------------------------------------------------------- */
@@ -402,12 +410,13 @@ void appMain(gecko_configuration_t *pconfig)
 				struct gecko_msg_cte_receiver_connectionless_iq_report_evt_t *report =
 				&(evt->data.evt_cte_receiver_connectionless_iq_report);
 
-				printLog(
-				"status: %d, ch: %d, rssi: %d, ant:%d, cte:%d, duration:%d, sync:%d, event: %d, len:%d\r\n",
-				report->status, report->channel, report->rssi, report->rssi_antenna_id,
-				report->cte_type, report->slot_durations, report->sync, report->event_counter,
-				report->samples.len);
-
+				//printLog(
+				//"status: %d, ch: %d, rssi: %d, ant:%d, cte:%d, duration:%d, sync:%d, event: %d, len:%d\r\n",
+				//report->status, report->channel, report->rssi, report->rssi_antenna_id,
+				//report->cte_type, report->slot_durations, report->sync, report->event_counter,
+				//report->samples.len);
+				ble_circ_push(report->channel);
+				ble_circ_push(report->rssi);
 				/*
 				for(int i=0; i<4;i++)
 					RETARGET_WriteChar(0xFF);
